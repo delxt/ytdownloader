@@ -1,0 +1,11 @@
+{
+  "name": "tube-downloader",
+  "private": true,
+  "description": "Tube Downloader: Next.js frontend + FastAPI/yt-dlp backend",
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "dev": "node scripts/dev.mjs",
+    "build": "npm --prefix frontend run build",
+    "lint": "npm --prefix frontend run lint"
+  }
+}
