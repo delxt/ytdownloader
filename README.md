@@ -1,6 +1,6 @@
 # Tube Downloader
 
-A small web app for downloading YouTube videos in 360p, 480p, 720p HD or 1080p Full HD. You paste a link, fetch the video info, pick a resolution and download the file.
+A small web app for downloading YouTube videos in 360p, 480p, 720p HD or 1080p Full HD, or extracting just the audio as an MP3. You paste a link, fetch the video info, pick a resolution (or MP3 audio) and download the file.
 
 > **Use responsibly.** Only download videos that you own or have permission to download, and follow YouTube's Terms of Service and copyright law. The app does not circumvent DRM or bypass access controls: private, members-only, age-restricted and DRM-protected videos are rejected.
 
@@ -25,15 +25,15 @@ ytdownloader/
 
 | Endpoint | Body | Result |
 |---|---|---|
-| `POST /api/video/info` | `{ "url": "..." }` | Title, thumbnail, duration, uploader and the available resolutions with estimated sizes |
-| `POST /api/video/download` | `{ "url": "...", "resolution": 720 }` | Starts a download job and returns `{ id, status, ... }` (202) |
+| `POST /api/video/info` | `{ "url": "..." }` | Title, thumbnail, duration, uploader, the available resolutions with estimated sizes, and an `audio` entry for the MP3 option (`null` if the video has no audio stream) |
+| `POST /api/video/download` | `{ "url": "...", "resolution": 720 }` or `{ "url": "...", "format": "mp3" }` (`format` defaults to `"mp4"`) | Starts a download job and returns `{ id, status, ... }` (202) |
 | `GET /api/video/download/{id}` | – | Job status: `queued`, `downloading` or `merging` (with `downloaded`/`total` bytes), then `ready`, `error` or `cancelled` |
-| `GET /api/video/download/{id}/file` | – | The finished MP4 as an attachment. The file is deleted from the server once it has been sent |
+| `GET /api/video/download/{id}/file` | – | The finished MP4 (or MP3) as an attachment. The file is deleted from the server once it has been sent |
 | `DELETE /api/video/download/{id}` | – | Cancels the job and deletes its files |
 | `GET /api/health` | – | `{ "status": "ok" }` |
 
 - **URL validation:** only `youtube.com`, `www.youtube.com`, `m.youtube.com` and `youtu.be` are accepted. Watch, `youtu.be`, Shorts, embed and live URL forms all work. The video ID is extracted and the request goes to a rebuilt canonical URL, so playlist parameters and other hosts never reach yt-dlp.
-- **Formats:** the backend picks the best video stream at the chosen resolution, preferring H.264, and the best audio stream, preferring AAC. FFmpeg merges them into an MP4 that plays on any device.
+- **Formats:** the backend picks the best video stream at the chosen resolution, preferring H.264, and the best audio stream, preferring AAC. FFmpeg merges them into an MP4 that plays on any device. For MP3, the best audio stream is downloaded and converted to a 192 kbps MP3 by FFmpeg.
 - **Large files (up to 10 GB by default):** the server prepares the file in a background job while the page polls its progress. When the file is ready, the browser downloads it with its own download manager, so the video never has to fit in page memory.
 - **Temporary storage:** each job gets its own temp directory. The directory is deleted after the file is sent, when the job fails or is cancelled, and after `JOB_TTL_SECONDS` if the file is never collected. Leftover folders from a crashed run are removed when the server starts. Before a job starts, the server checks that the disk has about 2.2× the file size free, because the separate streams and the merged file exist at the same time for a moment.
 - **Limits:**
@@ -111,7 +111,7 @@ cp .env.example .env.local      # Windows: copy .env.example .env.local
 npm run dev
 ```
 
-Open http://localhost:3000, paste a link and click **Fetch Video**. Then pick a resolution and click **Download Video**.
+Open http://localhost:3000, paste a link and click **Fetch Video**. Then pick a resolution (or **MP3 audio**) and click **Download**.
 
 ## Configuration
 

@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from typing import Literal
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -50,7 +51,8 @@ class InfoRequest(BaseModel):
 
 class DownloadRequest(BaseModel):
     url: str = Field(..., max_length=2048)
-    resolution: int
+    resolution: int = 0  # ignored for mp3
+    format: Literal["mp4", "mp3"] = "mp4"
 
 
 # --------------------------------------------------------------------------- error handling
@@ -93,7 +95,7 @@ async def video_info(body: InfoRequest, request: Request):
 async def start_download(body: DownloadRequest, request: Request):
     """Start preparing a download. Poll the returned job, then fetch its file."""
     download_limiter.check(client_ip(request))
-    return jobs.start(body.url, body.resolution).public()
+    return jobs.start(body.url, body.resolution, body.format).public()
 
 
 @app.get("/api/video/download/{job_id}")
@@ -113,7 +115,7 @@ async def download_file(job_id: str):
         raise video.VideoError("This download isn't ready yet.", 409)
     return FileResponse(
         job.path,
-        media_type="video/mp4" if job.path.suffix == ".mp4" else "application/octet-stream",
+        media_type={".mp4": "video/mp4", ".mp3": "audio/mpeg"}.get(job.path.suffix, "application/octet-stream"),
         filename=job.filename,
         # Delete as soon as the file has been sent; the sweeper handles interrupted transfers.
         background=BackgroundTask(jobs.remove, job.id),

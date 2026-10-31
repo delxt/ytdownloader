@@ -28,6 +28,7 @@ class Job:
     url: str
     resolution: int
     workdir: Path
+    fmt: str = "mp4"
     status: str = "queued"  # queued | downloading | merging | ready | error | cancelled
     downloaded: int = 0
     total: int | None = None
@@ -60,7 +61,7 @@ def _run(job: Job) -> None:
     try:
         job.status = "downloading"
         path, filename = video.download(
-            job.url, job.resolution, job.workdir, on_progress, lambda: job.cancel_requested
+            job.url, job.resolution, job.workdir, on_progress, lambda: job.cancel_requested, job.fmt
         )
         job.path, job.filename, job.status = path, filename, "ready"
     except video.VideoError as exc:
@@ -75,9 +76,11 @@ def _run(job: Job) -> None:
         job.updated = time.monotonic()
 
 
-def start(url: str, resolution: int) -> Job:
+def start(url: str, resolution: int, fmt: str = "mp4") -> Job:
     video.canonical_url(url)  # fail fast on bad input
-    if resolution not in video.SUPPORTED_RESOLUTIONS:
+    if fmt not in video.SUPPORTED_FORMATS:
+        raise video.VideoError("Unsupported format.", 422)
+    if fmt == "mp4" and resolution not in video.SUPPORTED_RESOLUTIONS:
         raise video.VideoError("Unsupported resolution.", 422)
 
     with _lock:
@@ -87,6 +90,7 @@ def start(url: str, resolution: int) -> Job:
             id=secrets.token_urlsafe(16),
             url=url,
             resolution=resolution,
+            fmt=fmt,
             workdir=Path(tempfile.mkdtemp(prefix="tube-", dir=settings.temp_dir)),
         )
         _jobs[job.id] = job

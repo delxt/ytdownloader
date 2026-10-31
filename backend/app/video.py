@@ -17,6 +17,8 @@ logger = logging.getLogger("tube.video")
 
 ALLOWED_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be", "www.youtu.be"}
 SUPPORTED_RESOLUTIONS = (360, 480, 720, 1080)
+SUPPORTED_FORMATS = ("mp4", "mp3")
+MP3_BITRATE_KBPS = 192
 DOWNLOAD_ATTEMPTS = 3
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 PATH_ID_RE = re.compile(r"^/(?:shorts|embed|live|v)/([A-Za-z0-9_-]{11})(?:/|$)")
@@ -199,9 +201,14 @@ def _pick_formats(info: dict, resolution: int) -> tuple[dict, dict | None]:
     if video.get("acodec") not in (None, "none"):
         return video, None  # progressive stream already contains audio
 
-    audios = [f for f in formats if _is_audio_only(f) and not (f.get("protocol") or "").startswith("m3u8")]
-    if not audios:
+    audio = _best_audio(formats)
+    if not audio:
         raise VideoError("No audio stream is available for this video.", 422)
+    return video, audio
+
+
+def _best_audio(formats: list[dict]) -> dict | None:
+    audios = [f for f in formats if _is_audio_only(f) and not (f.get("protocol") or "").startswith("m3u8")]
 
     def audio_rank(f):
         return (
@@ -211,7 +218,13 @@ def _pick_formats(info: dict, resolution: int) -> tuple[dict, dict | None]:
             f.get("abr") or f.get("tbr") or 0,
         )
 
-    return video, max(audios, key=audio_rank)
+    return max(audios, key=audio_rank) if audios else None
+
+
+def _mp3_size(info: dict) -> int | None:
+    """Estimated size of the converted MP3 (constant bitrate)."""
+    duration = info.get("duration")
+    return int(duration * MP3_BITRATE_KBPS * 1000 / 8) if duration else None
 
 
 # --------------------------------------------------------------------------- public API
@@ -237,7 +250,16 @@ def get_info(raw_url: str) -> dict:
             "too_large": bool(est and est > settings.max_filesize_bytes),
         })
 
-    if not resolutions:
+    audio = None
+    if _best_audio([f for f in info.get("formats") or [] if not _is_drm(f)]):
+        est = _mp3_size(info)
+        audio = {
+            "label": "MP3 audio",
+            "filesize": est,
+            "too_large": bool(est and est > settings.max_filesize_bytes),
+        }
+
+    if not resolutions and not audio:
         raise VideoError("No supported resolutions (360p–1080p) are available for this video.", 422)
 
     return {
@@ -248,6 +270,7 @@ def get_info(raw_url: str) -> dict:
         "duration": info.get("duration"),
         "thumbnail": info.get("thumbnail"),
         "resolutions": resolutions,
+        "audio": audio,
         "max_filesize_label": limit_text(),
     }
 
@@ -266,12 +289,17 @@ def download(
     workdir: Path,
     on_progress: ProgressCallback = lambda *_: None,
     is_cancelled: Callable[[], bool] = lambda: False,
+    fmt: str = "mp4",
 ) -> tuple[Path, str]:
-    """Download `resolution` into `workdir`. Returns (file path, suggested filename).
+    """Download `resolution` (or just the audio as MP3 when `fmt` is "mp3") into `workdir`.
 
-    `on_progress(phase, downloaded_bytes, total_bytes)` is called with phase "downloading" or "merging".
+    Returns (file path, suggested filename).
+    `on_progress(phase, downloaded_bytes, total_bytes)` is called with phase "downloading" or "merging"
+    ("merging" also covers the MP3 conversion).
     """
-    if resolution not in SUPPORTED_RESOLUTIONS:
+    if fmt not in SUPPORTED_FORMATS:
+        raise VideoError("Unsupported format.", 422)
+    if fmt == "mp4" and resolution not in SUPPORTED_RESOLUTIONS:
         raise VideoError("Unsupported resolution.", 422)
 
     url = canonical_url(raw_url)
@@ -294,7 +322,7 @@ def download(
         on_progress("downloading", downloaded, state["estimate"] or sum(t for _, t in files.values()) or None)
 
     def on_postprocess(d: dict) -> None:
-        if d.get("postprocessor") == "Merger" and d.get("status") == "started":
+        if d.get("postprocessor") in {"Merger", "ExtractAudio"} and d.get("status") == "started":
             downloaded = sum(done for done, _ in state["files"].values())
             on_progress("merging", downloaded, downloaded)
 
@@ -310,11 +338,15 @@ def download(
         "retries": 3,
         "fragment_retries": 3,
     }
+    if fmt == "mp3":
+        opts["postprocessors"] = [
+            {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": str(MP3_BITRATE_KBPS)}
+        ]
 
     try:
         for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
             try:
-                info = _download_once(url, resolution, opts, workdir, state)
+                info = _download_once(url, resolution, fmt, opts, workdir, state)
                 break
             except DownloadError as exc:
                 # googlevideo intermittently rejects a stream URL; fresh URLs usually work.
@@ -336,7 +368,8 @@ def download(
             raise VideoError("The server couldn't process this video. Please try again later.", 500)
         raise _friendly_error(exc)
 
-    files = [p for p in workdir.iterdir() if p.is_file() and p.suffix in {".mp4", ".mkv", ".webm"}]
+    wanted = {".mp3"} if fmt == "mp3" else {".mp4", ".mkv", ".webm"}
+    files = [p for p in workdir.iterdir() if p.is_file() and p.suffix in wanted]
     if not files:
         # yt-dlp skips (without error) files that exceed max_filesize.
         raise VideoError(f"The file exceeds the {limit_text()} limit. Try a lower resolution.", 413)
@@ -344,14 +377,23 @@ def download(
     if path.stat().st_size > settings.max_filesize_bytes:
         raise VideoError(f"The file exceeds the {limit_text()} limit. Try a lower resolution.", 413)
 
-    return path, f"{_safe_filename(info.get('title') or info['id'])} [{resolution}p]{path.suffix}"
+    title = _safe_filename(info.get("title") or info["id"])
+    return path, f"{title}{path.suffix}" if fmt == "mp3" else f"{title} [{resolution}p]{path.suffix}"
 
 
-def _download_once(url: str, resolution: int, opts: dict, workdir: Path, state: dict) -> dict:
+def _download_once(url: str, resolution: int, fmt: str, opts: dict, workdir: Path, state: dict) -> dict:
     # Extract and download with one instance: the media URLs are tied to its session.
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = _extract(ydl, url)
-        video, audio = _pick_formats(info, resolution)
+        if fmt == "mp3":
+            video = None
+            audio = _best_audio([f for f in info.get("formats") or [] if not _is_drm(f)])
+            if not audio:
+                raise VideoError("No audio stream is available for this video.", 422)
+            if (_mp3_size(info) or 0) > settings.max_filesize_bytes:
+                raise VideoError(f"This audio is too large (limit {limit_text()}).", 413)
+        else:
+            video, audio = _pick_formats(info, resolution)
 
         estimate = (_size(video) or 0) + (_size(audio) or 0)
         if estimate > settings.max_filesize_bytes:
@@ -365,9 +407,10 @@ def _download_once(url: str, resolution: int, opts: dict, workdir: Path, state: 
             raise VideoError("The server doesn't have enough free space for this video right now.", 507)
         state["estimate"] = estimate or None
 
-        ydl.format_selector = ydl.build_format_selector(
+        selector = audio["format_id"] if fmt == "mp3" else (
             video["format_id"] + (f"+{audio['format_id']}" if audio else "")
         )
+        ydl.format_selector = ydl.build_format_selector(selector)
         ydl.process_ie_result(info, download=True)
     return info
 

@@ -6,6 +6,7 @@ import {
   downloadVideo,
   fetchVideoInfo,
   looksLikeYouTubeUrl,
+  type Choice,
   type DownloadProgress,
   type VideoInfo,
 } from "@/lib/api";
@@ -49,7 +50,7 @@ function Spinner() {
 export default function Downloader() {
   const [url, setUrl] = useState("");
   const [info, setInfo] = useState<VideoInfo | null>(null);
-  const [resolution, setResolution] = useState<number | null>(null);
+  const [choice, setChoice] = useState<Choice | null>(null);
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const abortRef = useRef<AbortController | null>(null);
 
@@ -92,7 +93,7 @@ export default function Downloader() {
       setInfo(data);
       const usable = data.resolutions.filter((r) => !r.too_large);
       const preferred = usable.find((r) => r.height === 720) ?? usable.at(-1) ?? data.resolutions[0];
-      setResolution(preferred?.height ?? null);
+      setChoice(preferred?.height ?? (data.audio && !data.audio.too_large ? "mp3" : null));
       setStatus({ kind: "idle" });
     } catch (err) {
       setStatus({ kind: "error", message: messageOf(err) });
@@ -100,13 +101,13 @@ export default function Downloader() {
   }
 
   async function handleDownload() {
-    if (!info || !resolution) return;
+    if (!info || !choice) return;
     const controller = new AbortController();
     abortRef.current = controller;
     try {
       const { filename, filesize } = await downloadVideo(
         info.url,
-        resolution,
+        choice,
         (progress) => setStatus({ kind: "downloading", progress }),
         controller.signal,
       );
@@ -126,7 +127,7 @@ export default function Downloader() {
     }
   }
 
-  const selected = info?.resolutions.find((r) => r.height === resolution);
+  const selected = choice === "mp3" ? info?.audio : info?.resolutions.find((r) => r.height === choice);
 
   return (
     <div className="w-full space-y-6">
@@ -191,8 +192,8 @@ export default function Downloader() {
               </label>
               <select
                 id="resolution"
-                value={resolution ?? ""}
-                onChange={(e) => setResolution(Number(e.target.value))}
+                value={choice ?? ""}
+                onChange={(e) => setChoice(e.target.value === "mp3" ? "mp3" : Number(e.target.value))}
                 disabled={busy}
                 className="flex-1 rounded-xl border border-zinc-300 bg-white px-3 py-3 text-sm text-zinc-900 outline-none focus:border-red-500 focus:ring-4 focus:ring-red-500/15 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
               >
@@ -203,6 +204,13 @@ export default function Downloader() {
                     {r.too_large ? ` (over ${info.max_filesize_label} limit)` : ""}
                   </option>
                 ))}
+                {info.audio && (
+                  <option value="mp3" disabled={info.audio.too_large}>
+                    {info.audio.label}
+                    {formatBytes(info.audio.filesize) ? ` · ~${formatBytes(info.audio.filesize)}` : ""}
+                    {info.audio.too_large ? ` (over ${info.max_filesize_label} limit)` : ""}
+                  </option>
+                )}
               </select>
               {status.kind === "downloading" ? (
                 <button
@@ -219,7 +227,7 @@ export default function Downloader() {
                   disabled={busy || !selected || selected.too_large}
                   className="rounded-xl bg-red-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-red-500 disabled:opacity-60"
                 >
-                  Download Video
+                  {choice === "mp3" ? "Download MP3" : "Download Video"}
                 </button>
               )}
             </div>
@@ -258,7 +266,7 @@ function StatusMessage({ status }: { status: Status }) {
     progress.phase === "queued"
       ? "Starting…"
       : progress.phase === "merging"
-        ? "Merging video and audio… almost done."
+        ? "Finalizing your file… almost done."
         : `Preparing on the server… ${formatBytes(progress.downloaded) ?? "0 KB"}${progress.total ? ` of ${formatBytes(progress.total)}` : ""}`;
 
   return (

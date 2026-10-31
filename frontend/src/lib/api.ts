@@ -7,6 +7,15 @@ export type Resolution = {
   too_large: boolean;
 };
 
+export type AudioOption = {
+  label: string;
+  filesize: number | null;
+  too_large: boolean;
+};
+
+/** A resolution height (MP4 video) or "mp3" (audio only). */
+export type Choice = number | "mp3";
+
 export type VideoInfo = {
   id: string;
   url: string;
@@ -15,6 +24,7 @@ export type VideoInfo = {
   duration: number | null;
   thumbnail: string | null;
   resolutions: Resolution[];
+  audio: AudioOption | null;
   max_filesize_label: string;
 };
 
@@ -112,7 +122,7 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
  */
 export async function downloadVideo(
   url: string,
-  resolution: number,
+  choice: Choice,
   onProgress: (p: DownloadProgress) => void,
   signal: AbortSignal,
 ): Promise<{ filename: string; filesize: number | null }> {
@@ -121,7 +131,7 @@ export async function downloadVideo(
     await jobRequest("", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url, resolution }),
+      body: JSON.stringify(choice === "mp3" ? { url, format: "mp3" } : { url, format: "mp4", resolution: choice }),
       signal,
     })
   ).json();
@@ -152,5 +162,5 @@ export async function downloadVideo(
   document.body.appendChild(link);
   link.click();
   link.remove();
-  return { filename: job.filename ?? `video-${resolution}p.mp4`, filesize: job.filesize };
+  return { filename: job.filename ?? (choice === "mp3" ? "audio.mp3" : `video-${choice}p.mp4`), filesize: job.filesize };
 }
